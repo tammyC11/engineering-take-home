@@ -56,6 +56,23 @@ class ShareOut(BaseModel):
     revoked_at: datetime | None
 
 
+class ClinicianEntryOut(BaseModel):
+    """A diary entry as a doctor sees it; separate from EntryOut so /entries never changes."""
+
+    id: int
+    recorded_at: datetime
+    mood: int
+    symptoms: list[str]
+    note: str | None
+
+
+class AccessRecordOut(BaseModel):
+    clinician_id: int
+    clinician_name: str
+    accessed_at: datetime
+    entry_ids: list[int]
+
+
 class TelemetryEvent(BaseModel):
     event: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
 

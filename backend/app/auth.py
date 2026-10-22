@@ -38,3 +38,9 @@ def current_patient(user: Annotated[User, Depends(current_user)]) -> User:
     if user.role != "patient":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Patients only")
     return user
+
+
+def current_clinician(user: Annotated[User, Depends(current_user)]) -> User:
+    if user.role != "clinician":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Clinicians only")
+    return user

@@ -31,8 +31,9 @@ Status markers below: ✅ built and tested · 🚧 planned, not built yet.
 
 - `GET /clinician/patients/{patient_id}/entries` returns exactly the same `404 {"detail": "Not
   found"}` in every case where the doctor may not read. That covers: patient doesn't exist, never
-  shared, shared with another doctor, share revoked, share expired or not started yet. Otherwise
-  a doctor could loop over the sequential IDs and list who our patients are.
+  shared, shared with another doctor, share revoked. Otherwise a doctor could loop over the
+  sequential IDs and list who our patients are. `test_every_refusal_looks_the_same` compares the
+  responses byte for byte.
 - A doctor with an active share whose period has no entries gets `200 []`. That reveals nothing
   new: the patient told this doctor themself by sharing.
 - No patient data in responses beyond the entries, and no patient IDs in metrics or logs.
@@ -55,6 +56,13 @@ Status markers below: ✅ built and tested · 🚧 planned, not built yet.
 
 **Other assumptions**
 
+- **Shares don't expire; they last until the patient revokes them.** The period says *which
+  days* the doctor may read, not *until when*. "Last week" is always in the past when the doctor
+  opens it. API.md has no expiry field. A patient who forgets to revoke leaves access open
+  indefinitely, so an access window (e.g. the share ends 30 days after creation) is a next step
+  to agree with product and data protection.
+- `recorded_at` returned to a doctor is the real time: `app-v1` timestamps are repaired on the
+  way out (read as local time in the share's time zone). `/entries` stays unchanged.
 - A share's period may lie in the past or the future. Only `from_date > to_date` is invalid
   (`422`). An unknown `clinician_id` is invalid input (`422`, in FastAPI's usual validation error
   shape). Clinicians are a public list (`GET /clinicians`), so this reveals nothing.
@@ -102,25 +110,26 @@ are internal and not returned, because the API.md response shape is fixed.
 - **Append-only (O.Log_3):** a Postgres trigger rejects every `UPDATE` and `DELETE`. `TRUNCATE`
   stays possible so the test suite can reset tables; production would also deny it, and grant
   the app's database role only `INSERT` and `SELECT` on this table.
-- 🚧 The log row is written in the same transaction as the read. If the write fails, the doctor
-  gets no data and a failure counter goes up (O.Mon_1). No data leaves without a record.
+- ✅ The log row is committed before the response is sent. If the write fails, the doctor gets
+  no data and `access_log_write_failures_total` goes up (O.Mon_1). No data leaves without a
+  record.
 
 ## Requirements
 
 | ID | Applies? | Where it is met (code, test), or why not |
 | --- | --- | --- |
 | O.Purp_1 | Yes | 🚧 App: a confirmation step before sharing shows the doctor, "mood and symptoms" (plus "notes" if chosen) and the period. Widget test. |
-| O.Cons_1 | Yes | 🚧 Clinician endpoint returns only entries inside an active share's period, in the share's time zone; notes only if a covering share includes them. ✅ Time zone stored on the share. Tests for period edges, the `app-v1` case and notes. |
-| O.Cons_2 | Yes | ✅ `POST /shares/{id}/revoke` sets `revoked_at` (`backend/app/api.py`, `tests/test_shares.py`). 🚧 Every doctor read checks it; test that a read after revoking returns 404. |
+| O.Cons_1 | Yes | ✅ `GET /clinician/patients/{patient_id}/entries` (`backend/app/api.py`) returns only entries whose day, in the share's time zone, falls in an active share's period (`backend/app/sharing.py`); notes only if a covering share includes them. Tests in `tests/test_clinician_access.py`: period edges at midnight, `app-v1` entries, time zone kept on the share, overlapping shares. |
+| O.Cons_2 | Yes | ✅ `POST /shares/{id}/revoke` sets `revoked_at`; every doctor read only considers shares without it. `test_revoking_stops_access`, and the overlapping-shares test (revoking one share removes just its notes). |
 | O.Cons_3 | Yes | ✅ `shares.consent_version`, set from `CONSENT_VERSION` in `backend/app/api.py`; `test_share_keeps_the_patients_time_zone_and_consent_version`. |
 | O.Auth_1 | Yes, not met | Authentication is a stub, so the patient can't re-authenticate. How I would: put the last authentication time in the token, have `POST /shares` reject one older than 15 minutes with `401` and a "re-authenticate" code, and let the app ask for the password or biometrics and retry. |
 | O.Pass_1 | No | This feature adds no passwords. |
-| O.Log_1 | Yes | ✅ `access_log` table. 🚧 Every successful doctor read writes a row in the same transaction; test. |
-| O.Log_2 | Yes | 🚧 `GET /access-log` and the app's "Who saw your diary" section; tests. |
+| O.Log_1 | Yes | ✅ Every doctor read that returns entries writes an `access_log` row (doctor, entry IDs, whether notes were shown, time), committed before the response. `test_patient_sees_who_read_their_diary`, `test_refused_reads_are_not_logged`. |
+| O.Log_2 | Yes | ✅ `GET /access-log`, newest first, with the doctor's name; `test_patient_sees_who_read_their_diary`. 🚧 The app's "Who saw your diary" section. |
 | O.Log_3 | Yes, partly | ✅ Append-only trigger, tested in `test_schema.py`. Ten-year retention: nothing deletes these rows; a retention job and backup policy are outside this repo. |
 | O.Log_4 | Yes | ✅ **Fixed an existing violation:** `backend/app/main.py` logged every request body (moods, symptoms, notes). It now logs the route template (`/clinician/patients/{patient_id}/entries`) instead of the path or body, and uvicorn's own access log, which prints raw paths with patient IDs, is switched off. Test: `test_request_log_has_no_health_data`. Metrics use only bounded labels, never patient IDs. |
-| O.Mon_1 | Yes | 🚧 Counter for failed access-log writes, alerting on any increase (see Monitoring). |
-| O.Err_1 | Yes | 🚧 The clinician endpoint returns one generic 404; FastAPI returns a generic 500 without a stack trace. Test that a failed log write returns no internal details. |
+| O.Mon_1 | Yes | ✅ If the access-log write fails, the doctor gets no data and `access_log_write_failures_total` goes up; `test_no_data_leaves_when_the_read_cannot_be_logged`. 🚧 The alert rule itself (see Monitoring). |
+| O.Err_1 | Yes | ✅ The clinician endpoint returns one generic 404, and a failed log write returns `500 {"detail": "Internal server error"}` without SQL (tested). The server log names only the exception type, since the message holds SQL and parameters. |
 | O.Cryp_1 | Yes, outside this repo | Encryption at rest belongs to the database and disk setup (e.g. encrypted volumes, managed Postgres), not to application code. |
 | O.Del_1 | Stretch goal, not built | See below. The schema is designed so erasure stays possible. |
 | O.Doc_1 | Yes | This table. |
@@ -145,7 +154,7 @@ evidence. Both can be met:
 
 ## Monitoring
 
-🚧 Planned; no labels ever carry a patient ID or name.
+No label ever carries a patient ID or name. Counters ✅ built; alert rules and dashboard 🚧.
 
 **Is sharing used, and do sharers keep logging? (Mara, in three months)**
 
@@ -160,9 +169,9 @@ evidence. Both can be met:
 
 **Doctors can't open a diary (Lukas, on call)**
 
-- `clinician_reads_total{outcome="ok|not_found|error"}` and the existing request latency
+- ✅ `clinician_reads_total{outcome="ok|not_found|error"}` (all three exported from zero) and the existing request latency
   histogram for that route.
-- `access_log_write_failures_total`.
+- ✅ `access_log_write_failures_total`.
 - Page someone right away: any access-log write failure (O.Mon_1; doctors get no data), or the
   5xx rate on the clinician route above a few percent for 5 minutes on weekday mornings.
 - Can wait until morning: rising latency, or a jump in `not_found` (could be a portal bug, or
@@ -190,6 +199,7 @@ migration and models before moving on.
 - Fix how the app displays `app-v1` entries (read their wall-clock time as local).
 - A public, non-guessable patient ID for clinician-facing URLs, agreed with the portal team as a
   new endpoint version; keep integer primary keys internal.
+- An access window for shares (e.g. 30 days), so a forgotten share doesn't stay open forever.
 - Rate-limit the clinician endpoint and alert on many `not_found` responses from one doctor.
 - Re-authentication before sharing (O.Auth_1) once real authentication exists.
 - Erasure as described above.
