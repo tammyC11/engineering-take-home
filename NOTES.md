@@ -143,8 +143,8 @@ are internal and not returned, because the API.md response shape is fixed.
 | O.Log_1 | Yes | ✅ Every doctor read that returns entries writes an `access_log` row (doctor, entry IDs, whether notes were shown, time), committed before the response. `test_patient_sees_who_read_their_diary`, `test_refused_reads_are_not_logged`. |
 | O.Log_2 | Yes | ✅ `GET /access-log`, newest first, with the doctor's name; `test_patient_sees_who_read_their_diary`. App: "Who saw your diary" on the sharing screen; test `shows who saw the diary`. |
 | O.Log_3 | Yes, partly | ✅ Append-only trigger, tested in `test_schema.py`. Ten-year retention: nothing deletes these rows; a retention job and backup policy are outside this repo. |
-| O.Log_4 | Yes | ✅ **Fixed an existing violation:** `backend/app/main.py` logged every request body (moods, symptoms, notes). It now logs the route template (`/clinician/patients/{patient_id}/entries`) instead of the path or body, and uvicorn's own access log, which prints raw paths with patient IDs, is switched off. Test: `test_request_log_has_no_health_data`. Metrics use only bounded labels, never patient IDs. |
-| O.Mon_1 | Yes | ✅ If the access-log write fails, the doctor gets no data and `access_log_write_failures_total` goes up; `test_no_data_leaves_when_the_read_cannot_be_logged`. 🚧 The alert rule itself (see Monitoring). |
+| O.Log_4 | Yes | ✅ **Fixed an existing violation:** `backend/app/main.py` logged every request body (moods, symptoms, notes). It now logs the route template (`/clinician/patients/{patient_id}/entries`) instead of the path or body, and uvicorn's own access log, which prints raw paths with patient IDs, is switched off. Crash logs keep the error type and stack but not the message, which can quote the patient's row, and SQL parameters are hidden. Tests in `tests/test_logging.py`. Metrics use only bounded labels, never patient IDs. |
+| O.Mon_1 | Yes | ✅ If the access-log write fails, the doctor gets no data and `access_log_write_failures_total` goes up (`test_no_data_leaves_when_the_read_cannot_be_logged`). The "Access log write failed" alert pages on any increase (`observability/grafana/alerting/diary-sharing.yml`). |
 | O.Err_1 | Yes | ✅ The clinician endpoint returns one generic 404, and a failed log write returns `500 {"detail": "Internal server error"}` without SQL (tested). The server log names only the exception type, since the message holds SQL and parameters. |
 | O.Cryp_1 | Yes, outside this repo | Encryption at rest belongs to the database and disk setup (e.g. encrypted volumes, managed Postgres), not to application code. |
 | O.Del_1 | Stretch goal, not built | See below. The schema is designed so erasure stays possible. |
@@ -170,7 +170,9 @@ evidence. Both can be met:
 
 ## Monitoring
 
-No label ever carries a patient ID or name. Counters ✅ built; alert rules and dashboard 🚧.
+No metric label, alert or log line carries a patient ID, name or health data (Selin, O.Log_4).
+Run `make observe`, then Grafana at http://localhost:28003 → Dashboards → Diary → "Diary sharing:
+on call", and Alerting → Alert rules.
 
 **Is sharing used, and do sharers keep logging? (Mara, in three months)**
 
@@ -186,15 +188,59 @@ No label ever carries a patient ID or name. Counters ✅ built; alert rules and 
 
 **Doctors can't open a diary (Lukas, on call)**
 
-- ✅ `clinician_reads_total{outcome="ok|not_found|error"}` (all three exported from zero) and the existing request latency
-  histogram for that route.
-- ✅ `access_log_write_failures_total`.
-- Page someone right away: any access-log write failure (O.Mon_1; doctors get no data), or the
-  5xx rate on the clinician route above a few percent for 5 minutes on weekday mornings.
-- Can wait until morning: rising latency, or a jump in `not_found` (could be a portal bug, or
-  someone probing IDs).
-- When it's on fire: a Grafana panel per outcome, latency, and the API logs, which carry the
-  route and status but no bodies.
+Signals (✅ built, tested):
+
+- `clinician_reads_total{outcome="ok|not_found|error"}`: every doctor read and how it ended.
+  Crashes count as `error` too.
+- `access_log_write_failures_total`: reads refused because they couldn't be recorded.
+- `http_requests_total` and `http_request_duration_seconds` by route template and status, for
+  5xx, 401/403 and latency on the doctor's route.
+
+Alerts (✅ `observability/grafana/alerting/diary-sharing.yml`, loaded by Grafana). Locally they
+only show in Grafana; in production the `severity` label routes `page` to the on-call pager and
+`ticket` to the team channel.
+
+| Severity | Alert | Fires when | Check first |
+| --- | --- | --- | --- |
+| page | Access log write failed (O.Mon_1) | any failure in 5 min | Database reachable? Disk full? Migration touching `access_log` or its trigger? |
+| page | Doctors can't open diaries | ≥ 3 server errors on the doctor's route in 10 min **and** > 5% of its reads | Dashboard, then `make logs` for the error type, then database health |
+| page | Diary API down | Prometheus can't scrape the API for 1 min | Container, last deploy or migration, database connection |
+| ticket | Doctors' reads are slow | p95 > 1 s for 15 min | Database load, slow queries |
+| ticket | Unusually many "not found" | > 50% of doctors' reads in 1 h, with ≥ 20 reads | Portal sending wrong IDs, many revocations, or someone trying IDs (the access log and portal logs tell which) |
+| ticket | Portal auth failures | > 10 × 401/403 on the doctor's route in 15 min | Portal tokens, a recent portal release |
+| ticket | Patients can't manage sharing | ≥ 3 server errors on `/shares*` or `/access-log` in 15 min | `make logs`, database health |
+
+- Why the minimum counts: at night there are few reads, and one failure out of two would
+  otherwise be "50% errors" and wake someone for nothing.
+- The thresholds are first guesses without real traffic. Review them after two weeks.
+- Tested by hand: 12 rejected doctor reads made "Portal auth failures" fire after about a
+  minute, and it showed on the dashboard.
+
+When it's on fire: the "Diary sharing: on call" dashboard (✅ `observability/dashboards/diary-sharing.json`),
+top to bottom: firing alerts; API up, access-log failures, reads by outcome and server errors as
+single numbers; then reads by outcome, errors vs 401/403, latency and the patient-side requests
+over time. Then `make logs`: each request line has method, route template, status and duration;
+crashes show the error type and stack.
+
+Three gaps I found and fixed while building this:
+
+- **Crashes weren't counted.** An unexpected exception skipped the request middleware's metric,
+  so a 500 from a crash never reached `http_requests_total` and the paging alert would have
+  missed it. The middleware now counts it as `500` (`test_crashes_are_counted_as_server_errors`).
+- **The first errors after a restart didn't alert.** Prometheus sees no `increase()` in a series
+  whose first sample is already 12, and the error series only appear on the first error. The API
+  now creates the series the alerts watch at zero on start-up
+  (`test_alerted_series_start_at_zero`); this was found when the hand test above didn't fire.
+- **Crash logs could hold health data.** Postgres quotes the failing row in its error message
+  (`Failing row contains (… Panic attack at work …)`), and uvicorn logs that message with the
+  traceback. A log filter now keeps the error type and stack but withholds the message, and the
+  engine hides SQL parameters (`test_crash_logs_have_no_health_data`).
+
+Not built: a **synthetic check**. Everything above fires only after a doctor has hit the problem,
+and can't see requests that never reach the API (nginx, network) or wrong answers that still
+return 200. A probe that reads a test patient's diary through the public route every minute (e.g.
+Prometheus blackbox exporter with a test doctor's token) would catch those before the 8am calls.
+First on the next-steps list.
 
 ## Screenshots
 
@@ -205,6 +251,8 @@ Taken from the running app with the demo data (desktop browser width).
 ![Checking before sharing, with the overlap warning](docs/screenshots/2-check-before-sharing.jpg)
 
 ![Who can see your diary, and who saw it](docs/screenshots/3-who-can-see-and-who-saw.jpg)
+
+![On-call dashboard with a test alert firing](docs/screenshots/4-on-call-dashboard.jpg)
 
 ## How I used AI
 
@@ -217,6 +265,8 @@ migration and models before moving on.
 
 ## Next steps
 
+- A synthetic check for the doctor's route (see Monitoring), and a contact point so `page`
+  alerts reach the on-call pager.
 - Let the patient set their time zone in the app, and/or send the device time zone when
   sharing, so the shared days always match the diary view.
 - Fix how the app displays `app-v1` entries (read their wall-clock time as local).

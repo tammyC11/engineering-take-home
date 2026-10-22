@@ -8,7 +8,8 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql+psycopg://diary:diary@localhost:5432/diary"
 )
 
-engine = create_engine(DATABASE_URL)
+# Keep SQL parameters (notes, moods) out of error messages, which can end up in logs (O.Log_4).
+engine = create_engine(DATABASE_URL, hide_parameters=True)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 

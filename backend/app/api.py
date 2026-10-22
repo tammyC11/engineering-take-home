@@ -145,6 +145,16 @@ def access_log(user: PatientUser, db: Db) -> list[AccessRecordOut]:
 
 @router.get("/clinician/patients/{patient_id}/entries", response_model=list[ClinicianEntryOut])
 def clinician_entries(patient_id: int, user: ClinicianUser, db: Db) -> list[ClinicianEntryOut]:
+    try:
+        return _read_shared_entries(patient_id, user, db)
+    except HTTPException:
+        raise  # already counted
+    except Exception:
+        CLINICIAN_READS.labels("error").inc()
+        raise
+
+
+def _read_shared_entries(patient_id: int, user: User, db: Session) -> list[ClinicianEntryOut]:
     shares = db.scalars(
         select(Share).where(
             Share.patient_id == patient_id,

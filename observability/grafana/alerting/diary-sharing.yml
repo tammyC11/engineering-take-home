@@ -1,0 +1,218 @@
+# Diary sharing alerts, loaded by Grafana at start-up (make observe). See NOTES.md, "Monitoring".
+#
+# severity=page: wake the on-call engineer. severity=ticket: the next working morning.
+# Each query returns a value only while the problem is happening (PromQL comparisons drop the
+# rest), so "no data" means "all good" except for api-down. Thresholds are first guesses; review
+# them after two weeks of real traffic. No query, label or text carries patient data (O.Log_4).
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: diary-sharing-page
+    folder: Diary
+    interval: 1m
+    rules:
+      - uid: access-log-write-failed
+        title: Access log write failed
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: sum(increase(access_log_write_failures_total[5m])) > 0
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels: { severity: page, team: platform }
+        annotations:
+          summary: A doctor's read could not be recorded, so they got no data (O.Mon_1).
+          description: >-
+            Check first: is the database reachable, is the disk full, did a migration touch
+            access_log or its trigger? The API log names the error type.
+
+      - uid: clinician-reads-failing
+        title: Doctors can't open diaries
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                (sum(increase(http_requests_total{route="/clinician/patients/{patient_id}/entries",status=~"5.."}[10m])) >= 3)
+                and
+                (sum(increase(http_requests_total{route="/clinician/patients/{patient_id}/entries",status=~"5.."}[10m]))
+                  / sum(increase(http_requests_total{route="/clinician/patients/{patient_id}/entries"}[10m])) > 0.05)
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        labels: { severity: page, team: platform }
+        annotations:
+          summary: At least 3 doctors' reads in 10 minutes failed with a server error (over 5%).
+          description: >-
+            Check first: the "Diary sharing" dashboard (errors vs reads), then `make logs` for the
+            error type, then database health.
+
+      - uid: api-down
+        title: Diary API down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: up{job="api"}
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+        noDataState: Alerting
+        execErrState: Error
+        for: 1m
+        labels: { severity: page, team: platform }
+        annotations:
+          summary: Prometheus can't reach the diary API.
+          description: >-
+            Check first: is the api container running, did the last deploy or migration fail,
+            can it reach the database?
+
+  - orgId: 1
+    name: diary-sharing-ticket
+    folder: Diary
+    interval: 1m
+    rules:
+      - uid: clinician-reads-slow
+        title: Doctors' reads are slow
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route="/clinician/patients/{patient_id}/entries"}[5m]))) > 1
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        labels: { severity: ticket, team: platform }
+        annotations:
+          summary: 95% of doctors' reads take longer than 1 s, for 15 minutes.
+          description: Check first, database load and slow queries on shares, diary_entries, access_log.
+
+      - uid: clinician-not-found-unusual
+        title: Unusually many "not found" for doctors
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 3600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                (sum(increase(clinician_reads_total{outcome="not_found"}[1h]))
+                  / sum(increase(clinician_reads_total[1h])) > 0.5)
+                and
+                (sum(increase(clinician_reads_total[1h])) >= 20)
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels: { severity: ticket, team: platform }
+        annotations:
+          summary: More than half of doctors' reads in the last hour found no valid share.
+          description: >-
+            Could be the portal sending wrong patient IDs, many revocations, or someone trying IDs.
+            The access log and the portal's logs tell which; metrics deliberately can't.
+
+      - uid: clinician-auth-failures
+        title: Portal auth failures
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum(increase(http_requests_total{route="/clinician/patients/{patient_id}/entries",status=~"401|403"}[15m])) > 10
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels: { severity: ticket, team: platform }
+        annotations:
+          summary: More than 10 doctors' reads in 15 minutes were rejected (401 or 403).
+          description: Check first, is the clinician portal sending valid clinician tokens? A recent portal release?
+
+      - uid: sharing-failing
+        title: Patients can't manage sharing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum(increase(http_requests_total{route=~"/shares.*|/access-log",status=~"5.."}[15m])) >= 3
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels: { severity: ticket, team: platform }
+        annotations:
+          summary: Patients' sharing requests are failing with server errors.
+          description: Check first, `make logs` for the error type, then database health.
