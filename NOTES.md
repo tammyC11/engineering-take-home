@@ -1,6 +1,6 @@
 # Notes
 
-Time spent: _(fill in)_
+Time spent: 2 hours.
 
 Status markers below: ✅ built and tested · 🚧 planned, not built yet.
 
@@ -297,12 +297,38 @@ Taken from the running app with the demo data (desktop browser width).
 
 ## How I used AI
 
-_(fill in)_ Claude Code to read the codebase and summarise it, to walk through BRIEF.md and
-REQUIREMENTS.md, and to discuss the schema before coding. Decisions I made or changed during
-that discussion: the uniform `404 "Not found"`; storing the time zone on the share; the warning
-before a new share overlaps an existing one; grouping shares by doctor and using the existing
-`created_at` ("Shared on …") so patients can find and revoke a share. I reviewed the generated
-migration and models before moving on.
+**Tools.** Claude Code (Claude Opus) in the Claude desktop app, with access to the repo, a
+terminal for `make test`/`make lint`, and a built-in browser to click through the app and
+Grafana.
+
+**Workflow.**
+
+1. **Understand before building.** I asked the agent to explain the codebase, then went through
+   BRIEF.md and REQUIREMENTS.md requirement by requirement and agreed the schema before any code.
+2. **Decide the open questions myself.** For each one I asked for the pros and cons and then
+   chose:
+   - the time zone is stored on the share (frozen consent), not read from the profile at read
+     time;
+   - every refused doctor read gets the same `404 "Not found"`;
+   - with overlapping shares, a note is shown if any covering share includes notes.
+3. **Write the reasoning down first.** I had NOTES.md written before the endpoints, so the code
+   followed documented decisions rather than the other way round.
+4. **Small steps, each tested and committed:** schema → patient endpoints → doctor endpoint and
+   access log → app screens → on-call monitoring. Backend tests and lint ran after every step;
+   the app and the dashboard were also checked in the browser against the real API.
+
+**Where I steered or corrected it.**
+
+- I questioned what "a doctor must never learn whether someone is a patient" means in practice,
+  and whether UUIDs would solve it. The conclusion: UUIDs only make guessing harder; the fix is
+  identical responses for every refusal, which a test now compares byte for byte.
+- Its proposal for overlapping shares was only a backend rule. I added that the patient must be
+  warned before a new share changes what a doctor can see, and asked for a way to find and revoke
+  older shares. That became the overlap warning on the confirmation step and the grouped-by-doctor
+  sharing screen. (My idea of a `shared_at` field turned out to exist already as `created_at`, so
+  the API contract stayed unchanged.)
+- I asked to talk through on-call monitoring before building it, and cut the product report when
+  time ran short instead of rushing it.
 
 ## Next steps
 
