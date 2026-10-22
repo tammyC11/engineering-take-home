@@ -176,15 +176,56 @@ on call", and Alerting → Alert rules.
 
 **Is sharing used, and do sharers keep logging? (Mara, in three months)**
 
-- ✅ App events via `api.track()`: `sharing_opened`, `share_created`, `share_revoked`, alongside
+Built now (✅), for watching the launch week by week:
+
+- Backend counter `share_changes_total{action="created|revoked"}`. It counts shares from every
+  app version, so it is the source of truth for volume.
+- App events via `api.track()`: `sharing_opened`, `share_created`, `share_revoked`, alongside
   the existing `entry_created`. `sharing_opened` vs `share_created` shows how many patients look
-  at sharing but don't go through with it.
-- ✅ Backend counter `share_changes_total{action="created|revoked"}`, which doesn't depend on
-  the app sending events (old app versions, blocked requests).
-- Limitation: a Prometheus counter can't say whether *the patients who share* keep logging,
-  because that needs per-patient data, which doesn't belong in metrics. For that I'd run a
-  periodic query on the database (patients with a share vs without, entries per week before and
-  after sharing) and report only the aggregate.
+  at sharing but don't go through with it. Only the new app sends them.
+- `clinician_reads_total{outcome="ok"}`: doctors actually opening shared diaries.
+
+Why metrics can't answer Mara's question:
+
+- They count events, not patients: 300 shares could be 300 patients or 30 sharing ten times.
+- Prometheus keeps 15 days by default, so the early weeks would be gone at decision time.
+- Linking "shared" to "kept logging" needs per-patient data, which must never go into metrics.
+
+The database has all of it, for as long as the data exists: `shares`, `access_log` and
+`diary_entries`. So the answer is a report that outputs totals only.
+
+**Next: a sharing report (`make report`)** 🚧 not built, first on the next-steps list. A SQL file
+run against a read replica, printing aggregate tables:
+
+- Adoption:
+  - share of active patients (an entry in the last 30 days) who have shared at least once;
+  - new sharers per week (growing, or a launch spike that faded?);
+  - shares per sharer, and the share of shares that include notes;
+  - **share of shares the doctor actually opened** (from `access_log`): if doctors don't look,
+    the feature isn't delivering value, whatever the share count says;
+  - how often and how soon shares are revoked (regret or confusion).
+- Retention: patients grouped by the week of their first share; the share of each group that
+  logged at least once per week in the 4 weeks before sharing and the 4–8 weeks after, next to a
+  comparison group of non-sharers with similar sign-up month and prior logging.
+- Privacy (Selin): totals only, no IDs; any group under 10 patients shows as "<10"; erased
+  patients simply drop out.
+- Tested on a small set of example data, including the "<10" suppression.
+
+Also next, smaller: two totals counted from the database at each scrape, active shares and
+patients with an active share, and a "Diary sharing: product" dashboard with shares per day,
+the opened → shared funnel and successful doctor reads per day.
+
+To agree with Mara and Selin before the three months start:
+
+- **What "worth it" means**, decided now so the numbers can't be read either way later. For
+  example: at least 15% of active patients share within 3 months, doctors open at least 70% of
+  shares, and sharers keep logging at least as well as the comparison group.
+- **Correlation isn't causation.** Patients who share are probably more engaged to begin with.
+  The comparison group helps; a staggered rollout (sharing for half of patients first) would give
+  a real answer.
+- **Legal basis.** Analysing patients' use of a medical device, even as totals, needs a purpose
+  and legal basis signed off by data protection. The report is designed to need as little as
+  possible.
 
 **Doctors can't open a diary (Lukas, on call)**
 
@@ -265,6 +306,8 @@ migration and models before moving on.
 
 ## Next steps
 
+- **The sharing report for Mara** (`make report`, see Monitoring), then the two active-share
+  totals and the product dashboard. Agree on what "worth it" means with Mara first.
 - A synthetic check for the doctor's route (see Monitoring), and a contact point so `page`
   alerts reach the on-call pager.
 - Let the patient set their time zone in the app, and/or send the device time zone when
