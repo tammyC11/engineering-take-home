@@ -10,6 +10,8 @@ from app.metrics import LATENCY, REQUESTS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("diary.requests")
+# Uvicorn's access log prints raw paths, which carry patient IDs; log_requests below replaces it.
+logging.getLogger("uvicorn.access").disabled = True
 
 app = FastAPI(title="Symptom Diary API")
 app.include_router(router)
@@ -20,18 +22,17 @@ async def log_requests(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     started = time.perf_counter()
-    body = await request.body()
     response = await call_next(request)
     route = request.scope["route"].path if "route" in request.scope else "unmatched"
     REQUESTS.labels(request.method, route, response.status_code).inc()
     LATENCY.labels(request.method, route).observe(time.perf_counter() - started)
+    # The route template, never the path or body: they carry patient IDs and health data (O.Log_4).
     logger.info(
-        "%s %s -> %s in %.0f ms, body=%s",
+        "%s %s -> %s in %.0f ms",
         request.method,
-        request.url.path,
+        route,
         response.status_code,
         (time.perf_counter() - started) * 1000,
-        body.decode(errors="replace") or "-",
     )
     return response
 

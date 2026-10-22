@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
 class EntryIn(BaseModel):
@@ -26,6 +27,33 @@ class ClinicianOut(BaseModel):
     id: int
     name: str
     practice: str
+
+
+class ShareIn(BaseModel):
+    clinician_id: int
+    from_date: date
+    to_date: date
+    include_notes: bool = False
+
+    @model_validator(mode="after")
+    def period_is_ordered(self) -> Self:
+        if self.from_date > self.to_date:
+            raise ValueError("from_date must not be after to_date")
+        return self
+
+
+class ShareOut(BaseModel):
+    """Exactly the fields in API.md; the share's time zone and consent version stay internal."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    clinician_id: int
+    from_date: date
+    to_date: date
+    include_notes: bool
+    created_at: datetime
+    revoked_at: datetime | None
 
 
 class TelemetryEvent(BaseModel):

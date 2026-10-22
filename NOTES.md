@@ -56,7 +56,10 @@ Status markers below: ✅ built and tested · 🚧 planned, not built yet.
 **Other assumptions**
 
 - A share's period may lie in the past or the future. Only `from_date > to_date` is invalid
-  (`422`). An unknown `clinician_id` is invalid input (`422`).
+  (`422`). An unknown `clinician_id` is invalid input (`422`, in FastAPI's usual validation error
+  shape). Clinicians are a public list (`GET /clinicians`), so this reveals nothing.
+- `created_at` and `revoked_at` come from the database clock and include microseconds
+  (`2026-10-22T10:18:21.920361Z`). API.md's example has none; both are valid ISO 8601.
 - Revoking a share that is already revoked returns it unchanged (`200`). Revoking another
   patient's share, or one that doesn't exist, returns `404`.
 - Only reads that returned at least one entry are recorded in the access log. An empty answer
@@ -108,14 +111,14 @@ are internal and not returned, because the API.md response shape is fixed.
 | --- | --- | --- |
 | O.Purp_1 | Yes | 🚧 App: a confirmation step before sharing shows the doctor, "mood and symptoms" (plus "notes" if chosen) and the period. Widget test. |
 | O.Cons_1 | Yes | 🚧 Clinician endpoint returns only entries inside an active share's period, in the share's time zone; notes only if a covering share includes them. ✅ Time zone stored on the share. Tests for period edges, the `app-v1` case and notes. |
-| O.Cons_2 | Yes | 🚧 `POST /shares/{id}/revoke` sets `revoked_at`; every read checks it. Test: a read after revoking returns 404. |
-| O.Cons_3 | Yes | ✅ `shares.consent_version`. 🚧 Set from a constant on create; test. |
+| O.Cons_2 | Yes | ✅ `POST /shares/{id}/revoke` sets `revoked_at` (`backend/app/api.py`, `tests/test_shares.py`). 🚧 Every doctor read checks it; test that a read after revoking returns 404. |
+| O.Cons_3 | Yes | ✅ `shares.consent_version`, set from `CONSENT_VERSION` in `backend/app/api.py`; `test_share_keeps_the_patients_time_zone_and_consent_version`. |
 | O.Auth_1 | Yes, not met | Authentication is a stub, so the patient can't re-authenticate. How I would: put the last authentication time in the token, have `POST /shares` reject one older than 15 minutes with `401` and a "re-authenticate" code, and let the app ask for the password or biometrics and retry. |
 | O.Pass_1 | No | This feature adds no passwords. |
 | O.Log_1 | Yes | ✅ `access_log` table. 🚧 Every successful doctor read writes a row in the same transaction; test. |
 | O.Log_2 | Yes | 🚧 `GET /access-log` and the app's "Who saw your diary" section; tests. |
 | O.Log_3 | Yes, partly | ✅ Append-only trigger, tested in `test_schema.py`. Ten-year retention: nothing deletes these rows; a retention job and backup policy are outside this repo. |
-| O.Log_4 | Yes | 🚧 **Existing violation:** `backend/app/main.py` logs every request body, which includes moods, symptoms and notes. Remove it; test that the log has no body. Metrics use only bounded labels, never patient IDs. |
+| O.Log_4 | Yes | ✅ **Fixed an existing violation:** `backend/app/main.py` logged every request body (moods, symptoms, notes). It now logs the route template (`/clinician/patients/{patient_id}/entries`) instead of the path or body, and uvicorn's own access log, which prints raw paths with patient IDs, is switched off. Test: `test_request_log_has_no_health_data`. Metrics use only bounded labels, never patient IDs. |
 | O.Mon_1 | Yes | 🚧 Counter for failed access-log writes, alerting on any increase (see Monitoring). |
 | O.Err_1 | Yes | 🚧 The clinician endpoint returns one generic 404; FastAPI returns a generic 500 without a stack trace. Test that a failed log write returns no internal details. |
 | O.Cryp_1 | Yes, outside this repo | Encryption at rest belongs to the database and disk setup (e.g. encrypted volumes, managed Postgres), not to application code. |
@@ -148,7 +151,8 @@ evidence. Both can be met:
 
 - App events via `api.track()`: `share_created`, `share_revoked`, alongside the existing
   `entry_created`.
-- Backend counters as a fallback that doesn't depend on the app sending events.
+- ✅ Backend counter `share_changes_total{action="created|revoked"}`, which doesn't depend on
+  the app sending events (old app versions, blocked requests).
 - Limitation: a Prometheus counter can't say whether *the patients who share* keep logging,
   because that needs per-patient data, which doesn't belong in metrics. For that I'd run a
   periodic query on the database (patients with a share vs without, entries per week before and
