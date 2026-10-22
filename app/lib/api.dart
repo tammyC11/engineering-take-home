@@ -38,6 +38,50 @@ class ApiClient {
     return DiaryEntry.fromJson(_decode(response, 201));
   }
 
+  Future<List<Clinician>> listClinicians() async {
+    final response = await _client.get(baseUrl.resolve('clinicians'), headers: _headers);
+    final List<dynamic> json = _decode(response, 200);
+    return json.map((c) => Clinician.fromJson(c as Map<String, dynamic>)).toList();
+  }
+
+  /// The patient's shares, newest first.
+  Future<List<Share>> listShares() async {
+    final response = await _client.get(baseUrl.resolve('shares'), headers: _headers);
+    final List<dynamic> json = _decode(response, 200);
+    return json.map((s) => Share.fromJson(s as Map<String, dynamic>)).toList();
+  }
+
+  Future<Share> createShare({
+    required int clinicianId,
+    required DateTime from,
+    required DateTime to,
+    required bool includeNotes,
+  }) async {
+    final response = await _client.post(
+      baseUrl.resolve('shares'),
+      headers: _headers,
+      body: jsonEncode({
+        'clinician_id': clinicianId,
+        'from_date': formatIsoDate(from),
+        'to_date': formatIsoDate(to),
+        'include_notes': includeNotes,
+      }),
+    );
+    return Share.fromJson(_decode(response, 201));
+  }
+
+  Future<Share> revokeShare(int id) async {
+    final response = await _client.post(baseUrl.resolve('shares/$id/revoke'), headers: _headers);
+    return Share.fromJson(_decode(response, 200));
+  }
+
+  /// Who read the diary, newest first.
+  Future<List<AccessRecord>> accessLog() async {
+    final response = await _client.get(baseUrl.resolve('access-log'), headers: _headers);
+    final List<dynamic> json = _decode(response, 200);
+    return json.map((r) => AccessRecord.fromJson(r as Map<String, dynamic>)).toList();
+  }
+
   /// Counts a product event such as `entry_created` (only the name is sent). Failures are ignored:
   /// telemetry must never get in the patient's way.
   Future<void> track(String event) async {

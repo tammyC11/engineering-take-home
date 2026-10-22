@@ -50,9 +50,25 @@ Status markers below: ✅ built and tested · 🚧 planned, not built yet.
 - Rejected alternatives: "newest share wins" (creating a share would silently change an older
   consent) and "refuse overlaps" (API.md defines only `422` for invalid input, and refusing a
   valid request would annoy patients).
-- To avoid confusing the patient (see the app section below), the app shows a warning before a
-  new share overlaps an active one with the same doctor. It also groups shares by doctor, with a
-  plain summary of what each doctor can see.
+- To avoid confusing the patient, the confirmation step warns when a new share overlaps an
+  active one with the same doctor, saying what changes for the overlapping days ("Dr. Lena
+  Hofmann will also see your notes for 16 Oct – 21 Oct, which your earlier share didn't
+  include"). The sharing screen groups active shares by doctor, each with its days, what it
+  includes, "Shared on …" and its own "Stop sharing", plus "Stop all sharing with Dr. …" when
+  there are several. (`app/lib/new_share_screen.dart`, `app/lib/sharing_screen.dart`)
+
+**App**
+
+- Entry point: "Share with your doctor" under the date on the diary screen. The patient's main
+  action there stays "New entry".
+- Sharing screen: "Who can see your diary", "Who saw your diary" ("Looked at 4 entries on 22 Oct
+  at 12:22"), and "Past shares". Wording follows DESIGN.md ("your doctor", "who saw your
+  diary", never "audit log").
+- New share: pick a doctor, then "Last 7 / 14 / 30 days" (today included) or own dates, and
+  "Also share my notes" (off by default). Days are the patient's local calendar days.
+- Stopping a share asks for confirmation first ("Keep sharing" / "Stop sharing").
+- Not built: a separate summary line per doctor merging overlapping periods; the per-share rows
+  and the overlap warning cover it for now.
 
 **Other assumptions**
 
@@ -118,14 +134,14 @@ are internal and not returned, because the API.md response shape is fixed.
 
 | ID | Applies? | Where it is met (code, test), or why not |
 | --- | --- | --- |
-| O.Purp_1 | Yes | 🚧 App: a confirmation step before sharing shows the doctor, "mood and symptoms" (plus "notes" if chosen) and the period. Widget test. |
+| O.Purp_1 | Yes | ✅ `ConfirmShareScreen` (`app/lib/new_share_screen.dart`) shows who (doctor and practice), what ("Your mood and symptoms. Your notes stay private." or "Your mood, symptoms and notes") and which days before "Share my diary". Test: `shares mood and symptoms for the last 7 days after showing what is shared` (`app/test/sharing_test.dart`). |
 | O.Cons_1 | Yes | ✅ `GET /clinician/patients/{patient_id}/entries` (`backend/app/api.py`) returns only entries whose day, in the share's time zone, falls in an active share's period (`backend/app/sharing.py`); notes only if a covering share includes them. Tests in `tests/test_clinician_access.py`: period edges at midnight, `app-v1` entries, time zone kept on the share, overlapping shares. |
 | O.Cons_2 | Yes | ✅ `POST /shares/{id}/revoke` sets `revoked_at`; every doctor read only considers shares without it. `test_revoking_stops_access`, and the overlapping-shares test (revoking one share removes just its notes). |
 | O.Cons_3 | Yes | ✅ `shares.consent_version`, set from `CONSENT_VERSION` in `backend/app/api.py`; `test_share_keeps_the_patients_time_zone_and_consent_version`. |
 | O.Auth_1 | Yes, not met | Authentication is a stub, so the patient can't re-authenticate. How I would: put the last authentication time in the token, have `POST /shares` reject one older than 15 minutes with `401` and a "re-authenticate" code, and let the app ask for the password or biometrics and retry. |
 | O.Pass_1 | No | This feature adds no passwords. |
 | O.Log_1 | Yes | ✅ Every doctor read that returns entries writes an `access_log` row (doctor, entry IDs, whether notes were shown, time), committed before the response. `test_patient_sees_who_read_their_diary`, `test_refused_reads_are_not_logged`. |
-| O.Log_2 | Yes | ✅ `GET /access-log`, newest first, with the doctor's name; `test_patient_sees_who_read_their_diary`. 🚧 The app's "Who saw your diary" section. |
+| O.Log_2 | Yes | ✅ `GET /access-log`, newest first, with the doctor's name; `test_patient_sees_who_read_their_diary`. App: "Who saw your diary" on the sharing screen; test `shows who saw the diary`. |
 | O.Log_3 | Yes, partly | ✅ Append-only trigger, tested in `test_schema.py`. Ten-year retention: nothing deletes these rows; a retention job and backup policy are outside this repo. |
 | O.Log_4 | Yes | ✅ **Fixed an existing violation:** `backend/app/main.py` logged every request body (moods, symptoms, notes). It now logs the route template (`/clinician/patients/{patient_id}/entries`) instead of the path or body, and uvicorn's own access log, which prints raw paths with patient IDs, is switched off. Test: `test_request_log_has_no_health_data`. Metrics use only bounded labels, never patient IDs. |
 | O.Mon_1 | Yes | ✅ If the access-log write fails, the doctor gets no data and `access_log_write_failures_total` goes up; `test_no_data_leaves_when_the_read_cannot_be_logged`. 🚧 The alert rule itself (see Monitoring). |
@@ -158,8 +174,9 @@ No label ever carries a patient ID or name. Counters ✅ built; alert rules and 
 
 **Is sharing used, and do sharers keep logging? (Mara, in three months)**
 
-- App events via `api.track()`: `share_created`, `share_revoked`, alongside the existing
-  `entry_created`.
+- ✅ App events via `api.track()`: `sharing_opened`, `share_created`, `share_revoked`, alongside
+  the existing `entry_created`. `sharing_opened` vs `share_created` shows how many patients look
+  at sharing but don't go through with it.
 - ✅ Backend counter `share_changes_total{action="created|revoked"}`, which doesn't depend on
   the app sending events (old app versions, blocked requests).
 - Limitation: a Prometheus counter can't say whether *the patients who share* keep logging,
@@ -181,7 +198,13 @@ No label ever carries a patient ID or name. Counters ✅ built; alert rules and 
 
 ## Screenshots
 
-_(to add)_
+Taken from the running app with the demo data (desktop browser width).
+
+![Choosing a doctor and the days](docs/screenshots/1-choose-doctor-and-days.jpg)
+
+![Checking before sharing, with the overlap warning](docs/screenshots/2-check-before-sharing.jpg)
+
+![Who can see your diary, and who saw it](docs/screenshots/3-who-can-see-and-who-saw.jpg)
 
 ## How I used AI
 

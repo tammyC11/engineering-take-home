@@ -4,6 +4,7 @@ import 'add_entry_screen.dart';
 import 'api.dart';
 import 'format.dart';
 import 'models.dart';
+import 'sharing_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -32,6 +33,10 @@ class _DiaryScreenState extends State<DiaryScreen> {
     if (saved == true) _reload();
   }
 
+  void _openSharing() {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => SharingScreen(api: widget.api)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final today = dayOf(DateTime.now());
@@ -52,7 +57,11 @@ class _DiaryScreenState extends State<DiaryScreen> {
                 padding: const EdgeInsets.fromLTRB(Space.m, Space.l, Space.m, 96),
                 children: [
                   ContentColumn(
-                    child: _Header(today: today, entries: entries ?? const []),
+                    child: _Header(
+                      today: today,
+                      entries: entries ?? const [],
+                      onShare: _openSharing,
+                    ),
                   ),
                   const SizedBox(height: Space.l),
                   if (snapshot.hasError)
@@ -97,10 +106,11 @@ List<_Day> _groupByDay(List<DiaryEntry> entries) {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.today, required this.entries});
+  const _Header({required this.today, required this.entries, required this.onShare});
 
   final DateTime today;
   final List<DiaryEntry> entries;
+  final VoidCallback onShare;
 
   @override
   Widget build(BuildContext context) {
@@ -111,7 +121,16 @@ class _Header extends StatelessWidget {
         Text('My diary', style: text.headlineMedium),
         const SizedBox(height: Space.xs),
         Text(formatLongDate(today), style: text.bodyMedium),
-        const SizedBox(height: Space.l),
+        const SizedBox(height: Space.s),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: onShare,
+            icon: const Icon(Icons.share_outlined),
+            label: const Text('Share with your doctor'),
+          ),
+        ),
+        const SizedBox(height: Space.m),
         _MoodStrip(today: today, entries: entries),
       ],
     );

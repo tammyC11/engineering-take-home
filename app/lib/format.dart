@@ -28,6 +28,16 @@ String formatTime(DateTime value) {
 String formatLongDate(DateTime day) =>
     '${_weekdays[day.weekday - 1]}, ${day.day} ${_months[day.month - 1]}';
 
+/// "10 Oct"
+String formatShortDate(DateTime day) => '${day.day} ${_months[day.month - 1].substring(0, 3)}';
+
+/// "1 Oct – 7 Oct", or "1 Oct" for a single day.
+String formatPeriod(DateTime from, DateTime to) =>
+    from == to ? formatShortDate(from) : '${formatShortDate(from)} – ${formatShortDate(to)}';
+
+/// "10 Oct at 09:03", in local time.
+String formatDateTime(DateTime value) => '${formatShortDate(dayOf(value))} at ${formatTime(value)}';
+
 /// "Today", "Yesterday" or "Sat 10 Oct"
 String formatDayHeading(DateTime day, DateTime today) {
   final daysAgo = dayOf(today).difference(day).inDays;
