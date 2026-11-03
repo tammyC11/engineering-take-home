@@ -88,8 +88,8 @@ Status markers below: ✅ built and tested · 🚧 planned, not built yet.
   patient's share, or one that doesn't exist, returns `404`.
 - Only reads that returned at least one entry are recorded in the access log. An empty answer
   disclosed no health data.
-- Consent wording is versioned in code (a `consent_version` string stored on each share); the
-  text itself lives in the repo.
+- Consent wording is versioned: each share stores a `consent_version`, and `consent_texts` holds
+  the wording for each version (added in migration `0003`, see Erasure).
 
 ## Data model decisions
 
@@ -107,8 +107,8 @@ shape for app v2.3.
 | `from_date`, `to_date` (`date`, inclusive, `CHECK from_date <= to_date`) | The patient agrees to calendar days, not timestamps |
 | `timezone` | Copied from the patient when sharing, so a later profile change can't widen or shift the consent (O.Cons_1) |
 | `include_notes` (default `false`) | Notes stay private unless the patient opts in (Selin, Dr. Keller) |
-| `consent_version` | Which wording the patient agreed to (O.Cons_3) |
-| `created_at`, `revoked_at` | Revoking sets a timestamp; shares are never deleted, because they are the proof of consent behind each access record |
+| `consent_version` → consent_texts | Which wording the patient agreed to (O.Cons_3); the foreign key means no share can name a wording we don't have |
+| `created_at`, `revoked_at` | Revoking sets a timestamp; the app never deletes shares. Only erasure does, which is why each access record keeps its own copy of the consent version |
 
 Index on `(clinician_id, patient_id)` for the doctor's lookup. `timezone` and `consent_version`
 are internal and not returned, because the API.md response shape is fixed.
@@ -117,13 +117,16 @@ are internal and not returned, because the API.md response shape is fixed.
 
 | Column | Why |
 | --- | --- |
-| `patient_id` (no foreign key) | Whose diary was read; no FK so the record can outlive erasure |
+| `patient_id` (no foreign key, nullable) | Whose diary was read; no FK so the record can outlive erasure, which sets it to NULL |
 | `clinician_id` → clinicians | Who read it; `clinician_name` in the response comes from joining `clinicians` |
 | `accessed_at` | When (O.Log_1) |
 | `entry_ids` (`int[]`, no FK) | Exactly which entries were disclosed |
+| `days` (`date[]`) | The patient's days of those entries, in the share's time zone; still answers "which days" once the entries are erased |
 | `notes_shown` | Whether notes were part of what was disclosed |
+| `consent_versions` (`text[]`) | The consent of the share(s) that allowed the read; an array because overlapping shares can both cover it |
 
-- **Append-only (O.Log_3):** a Postgres trigger rejects every `UPDATE` and `DELETE`. `TRUNCATE`
+- **Append-only (O.Log_3):** a Postgres trigger rejects every `UPDATE` and `DELETE`, except
+  the one erasure needs: setting `patient_id` to NULL with nothing else changed. `TRUNCATE`
   stays possible so the test suite can reset tables; production would also deny it, and grant
   the app's database role only `INSERT` and `SELECT` on this table.
 - ✅ The log row is committed before the response is sent. If the write fails, the doctor gets
@@ -137,36 +140,69 @@ are internal and not returned, because the API.md response shape is fixed.
 | O.Purp_1 | Yes | ✅ `ConfirmShareScreen` (`app/lib/new_share_screen.dart`) shows who (doctor and practice), what ("Your mood and symptoms. Your notes stay private." or "Your mood, symptoms and notes") and which days before "Share my diary". Test: `shares mood and symptoms for the last 7 days after showing what is shared` (`app/test/sharing_test.dart`). |
 | O.Cons_1 | Yes | ✅ `GET /clinician/patients/{patient_id}/entries` (`backend/app/api.py`) returns only entries whose day, in the share's time zone, falls in an active share's period (`backend/app/sharing.py`); notes only if a covering share includes them. Tests in `tests/test_clinician_access.py`: period edges at midnight, `app-v1` entries, time zone kept on the share, overlapping shares. |
 | O.Cons_2 | Yes | ✅ `POST /shares/{id}/revoke` sets `revoked_at`; every doctor read only considers shares without it. `test_revoking_stops_access`, and the overlapping-shares test (revoking one share removes just its notes). |
-| O.Cons_3 | Yes | ✅ `shares.consent_version`, set from `CONSENT_VERSION` in `backend/app/api.py`; `test_share_keeps_the_patients_time_zone_and_consent_version`. |
+| O.Cons_3 | Yes | ✅ `shares.consent_version`, set from `CONSENT_VERSION` in `backend/app/api.py`, with its wording in `consent_texts`; each access record also keeps the version, so it survives erasure. `test_share_keeps_the_patients_time_zone_and_consent_version`, `test_every_consent_version_has_its_wording`. |
 | O.Auth_1 | Yes, not met | Authentication is a stub, so the patient can't re-authenticate. How I would: put the last authentication time in the token, have `POST /shares` reject one older than 15 minutes with `401` and a "re-authenticate" code, and let the app ask for the password or biometrics and retry. |
 | O.Pass_1 | No | This feature adds no passwords. |
 | O.Log_1 | Yes | ✅ Every doctor read that returns entries writes an `access_log` row (doctor, entry IDs, whether notes were shown, time), committed before the response. `test_patient_sees_who_read_their_diary`, `test_refused_reads_are_not_logged`. |
 | O.Log_2 | Yes | ✅ `GET /access-log`, newest first, with the doctor's name; `test_patient_sees_who_read_their_diary`. App: "Who saw your diary" on the sharing screen; test `shows who saw the diary`. |
-| O.Log_3 | Yes, partly | ✅ Append-only trigger, tested in `test_schema.py`. Ten-year retention: nothing deletes these rows; a retention job and backup policy are outside this repo. |
+| O.Log_3 | Yes, partly | ✅ Append-only trigger, tested in `test_schema.py`; erasure may only unlink the patient (`test_the_only_allowed_change_is_unlinking_the_patient`). Ten-year retention: nothing deletes these rows; a retention job and backup policy are outside this repo. |
 | O.Log_4 | Yes | ✅ **Fixed an existing violation:** `backend/app/main.py` logged every request body (moods, symptoms, notes). It now logs the route template (`/clinician/patients/{patient_id}/entries`) instead of the path or body, and uvicorn's own access log, which prints raw paths with patient IDs, is switched off. Crash logs keep the error type and stack but not the message, which can quote the patient's row, and SQL parameters are hidden. Tests in `tests/test_logging.py`. Metrics use only bounded labels, never patient IDs. |
 | O.Mon_1 | Yes | ✅ If the access-log write fails, the doctor gets no data and `access_log_write_failures_total` goes up (`test_no_data_leaves_when_the_read_cannot_be_logged`). The "Access log write failed" alert pages on any increase (`observability/grafana/alerting/diary-sharing.yml`). |
 | O.Err_1 | Yes | ✅ The clinician endpoint returns one generic 404, and a failed log write returns `500 {"detail": "Internal server error"}` without SQL (tested). The server log names only the exception type, since the message holds SQL and parameters. |
 | O.Cryp_1 | Yes, outside this repo | Encryption at rest belongs to the database and disk setup (e.g. encrypted volumes, managed Postgres), not to application code. |
-| O.Del_1 | Stretch goal, not built | See below. The schema is designed so erasure stays possible. |
+| O.Del_1 | Yes | ✅ `make erase PATIENT=<id>` (`backend/app/erase.py`), see Erasure below. Tests in `tests/test_erasure.py`. |
 | O.Doc_1 | Yes | This table. |
 
-## Erasure (O.Del_1): how I would do it
+## Erasure (O.Del_1) ✅
 
-Selin wants everything erased; Dr. Keller needs the record of which doctor saw what as clinical
-evidence. Both can be met:
+Selin: erase all of it. Dr. Keller: keep the record of which doctor saw what. Both are met by
+deleting everything about the patient and keeping the access records with the link to the
+patient cut.
 
-1. Delete the patient's `diary_entries`, then their `shares`, then the `patients` row, in one
-   transaction. Foreign keys from those tables point at `patients`, so nothing is left behind.
-2. Keep the `access_log` rows but pseudonymise them: replace `patient_id` with a keyed hash, so
-   "Dr. X read 4 entries on 10 Oct" stays as evidence without saying whose they were. The log has
-   no foreign keys to patients or entries, so step 1 doesn't touch it. `entry_ids` then point at
-   entries that no longer exist, which is intended: they say what was disclosed, not what still
-   exists.
-3. The append-only trigger blocks step 2 for the normal app role. Erasure would run as a
-   separate, audited database role that may only perform this update.
-4. To decide with data protection and legal: the legal basis for keeping the pseudonymised
-   records (likely the 10-year retention duty), and whether shares themselves must be kept as
-   proof of consent in the same pseudonymised form.
+**How to run it** (data protection, after verifying the request):
+
+```bash
+make erase PATIENT=1
+```
+
+prints what would happen and changes nothing. Add `CONFIRM=yes` to erase. It prints and logs
+counts only, never names or health data. There is no endpoint: the request goes through data
+protection (identity check, legal holds), there is no admin role to protect an endpoint with,
+and it can't be undone.
+
+**What happens, in one transaction:**
+
+1. `access_log`: `patient_id` set to NULL on the patient's records. The trigger allows exactly
+   this change and nothing else.
+2. Delete the patient's `diary_entries`, `shares`, then the `patients` row.
+
+**What we keep, and why**
+
+Each access record still says: Dr. Hofmann, 22 Oct 12:22, read 14–15 Oct, notes not shown,
+under consent `2026-10-share-v1` (wording in `consent_texts`). That answers Dr. Keller's five
+questions for any past read, and O.Log_3 asks us to keep these records for ten years. Nothing
+in it says whose diary it was: no patient ID, no moods, symptoms or notes. `entry_ids` stay as
+the count and identity of what was disclosed; the entries they name no longer exist.
+
+To make this possible, migration `0003` gave each record its own `days` and
+`consent_versions`, written at read time, so it doesn't depend on the entries and shares that
+erasure deletes. Records written before `0003` were filled in from the data at migration time
+(days in the patient's current time zone).
+
+**Decided:** NULL, not a keyed hash. A hash could be linked back to the patient by whoever holds
+the key; Anna asked not to be traceable.
+
+**Limits, stated plainly**
+
+- We can no longer answer "did Dr. X see *Anna's* diary?". That is the point of erasure.
+- The doctor's own records can still tie a read to the patient, but the doctor already received
+  that data legitimately; we add no disclosure.
+- After erasure, the doctor gets the same `404 Not found` as for anyone unknown, and the
+  patient's token stops working (`401`).
+- Not covered in this repo: database backups (they expire under their own retention), the
+  record of the erasure request itself (kept by data protection, outside the app), and
+  Prometheus, which has no patient IDs to erase.
+- To confirm with legal: the legal basis for keeping the unlinked records (the ten-year duty).
 
 ## Monitoring
 
@@ -344,6 +380,4 @@ Grafana.
 - An access window for shares (e.g. 30 days), so a forgotten share doesn't stay open forever.
 - Rate-limit the clinician endpoint and alert on many `not_found` responses from one doctor.
 - Re-authentication before sharing (O.Auth_1) once real authentication exists.
-- Erasure as described above.
-- A `consent_texts` table instead of a version string in code.
 - Production database grants for `access_log` (`INSERT` and `SELECT` only, no `TRUNCATE`).

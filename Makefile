@@ -1,4 +1,4 @@
-.PHONY: help doctor setup up down restart observe app test test-api test-app lint format migration logs psql reset
+.PHONY: help doctor setup up down restart observe app test test-api test-app lint format migration logs psql erase reset
 
 COMPOSE := docker compose
 # Tool containers run as you, so files they write into the repo stay yours (matters on Linux).
@@ -71,6 +71,10 @@ logs: ## Follow the API logs
 
 psql: ## Open a SQL shell on the database
 	$(COMPOSE) exec db psql -U diary diary
+
+erase: ## Erase one patient's data: make erase PATIENT=1 (a dry run), then add CONFIRM=yes
+	@test -n "$(PATIENT)" || { echo "Usage: make erase PATIENT=<id> [CONFIRM=yes]"; exit 1; }
+	$(API) api python -m app.erase $(PATIENT) $(if $(filter yes,$(CONFIRM)),--confirm)
 
 reset: ## Delete the database and start fresh
 	$(COMPOSE) --profile observe down -v

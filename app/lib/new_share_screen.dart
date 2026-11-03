@@ -156,7 +156,8 @@ class _NewShareScreenState extends State<NewShareScreen> {
 
 /// Step 2: show exactly who, what and which days before the patient agrees (O.Purp_1).
 ///
-/// Changing this wording? Bump CONSENT_VERSION in backend/app/api.py.
+/// Changing this wording? Bump CONSENT_VERSION in backend/app/api.py and add the new wording
+/// to consent_texts in a migration.
 class ConfirmShareScreen extends StatefulWidget {
   const ConfirmShareScreen({
     super.key,

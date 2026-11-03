@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Sequence
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -23,11 +24,12 @@ from app.schemas import (
     ShareOut,
     TelemetryEvent,
 )
-from app.sharing import actual_recorded_at, covering_shares, search_window
+from app.sharing import actual_recorded_at, covering_shares, local_day, search_window
 
 logger = logging.getLogger("diary.sharing")
 
-# The consent wording the app shows before sharing (O.Cons_3). Bump it whenever that text changes.
+# The consent wording the app shows before sharing (O.Cons_3). Bump it whenever that text changes,
+# and add the new wording to consent_texts in a migration.
 CONSENT_VERSION = "2026-10-share-v1"
 
 router = APIRouter()
@@ -177,10 +179,14 @@ def _read_shared_entries(patient_id: int, user: User, db: Session) -> list[Clini
         )
     ).all()
     visible = []
+    days: set[date] = set()
+    consent_versions: set[str] = set()
     for entry in candidates:
         covering = covering_shares(entry, shares)
         if not covering:
             continue
+        days.add(local_day(entry, covering[0].timezone))
+        consent_versions.update(s.consent_version for s in covering)
         visible.append(
             ClinicianEntryOut(
                 id=entry.id,
@@ -194,14 +200,17 @@ def _read_shared_entries(patient_id: int, user: User, db: Session) -> list[Clini
     visible.sort(key=lambda e: (e.recorded_at, e.id), reverse=True)
 
     # O.Log_1: no entry leaves without a record. The record is committed before responding;
-    # if that fails, the doctor gets nothing.
+    # if that fails, the doctor gets nothing. It keeps the days and consent itself, so it still
+    # answers after the patient's entries and shares are erased.
     if visible:
         db.add(
             AccessLog(
                 patient_id=patient_id,
                 clinician_id=user.id,
                 entry_ids=[e.id for e in visible],
+                days=sorted(days),
                 notes_shown=any(e.note is not None for e in visible),
+                consent_versions=sorted(consent_versions),
             )
         )
         try:

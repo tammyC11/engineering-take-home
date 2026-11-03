@@ -19,7 +19,8 @@ def migrated_db() -> None:
 
 @pytest.fixture(autouse=True)
 def clean_db(migrated_db: None) -> None:
-    tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
+    # consent_texts is reference data that only migrations write.
+    tables = ", ".join(t.name for t in Base.metadata.sorted_tables if t.name != "consent_texts")
     with engine.begin() as connection:
         connection.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     with SessionLocal() as db:

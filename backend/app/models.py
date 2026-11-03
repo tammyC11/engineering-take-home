@@ -3,6 +3,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -51,6 +52,16 @@ class DiaryEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ConsentText(Base):
+    """The wording a patient agrees to before sharing (O.Cons_3). Rows are added by migrations,
+    never by the app, so every version a share or access record names has its text."""
+
+    __tablename__ = "consent_texts"
+
+    version: Mapped[str] = mapped_column(String(32), primary_key=True)
+    wording: Mapped[str] = mapped_column(Text)
+
+
 class Share(Base):
     """A patient's consent for one clinician to read their diary for a period of days."""
 
@@ -70,7 +81,7 @@ class Share(Base):
     timezone: Mapped[str] = mapped_column(String(64))
     include_notes: Mapped[bool] = mapped_column(default=False, server_default=false())
     # Which consent wording the patient agreed to (O.Cons_3).
-    consent_version: Mapped[str] = mapped_column(String(32))
+    consent_version: Mapped[str] = mapped_column(ForeignKey("consent_texts.version"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # Shares are never deleted: a revoked share is the record of what was consented to.
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -78,17 +89,25 @@ class Share(Base):
 
 class AccessLog(Base):
     """One clinician read of a patient's diary (O.Log_1). Append-only: a database trigger
-    rejects UPDATE and DELETE (O.Log_3)."""
+    rejects UPDATE and DELETE (O.Log_3), except unlinking the patient on erasure (O.Del_1).
+
+    Each record answers on its own, even after the patient's entries and shares are erased:
+    which doctor, when, which days, whether notes were shown, under which consent wording."""
 
     __tablename__ = "access_log"
     __table_args__ = (Index("ix_access_log_patient_id_accessed_at", "patient_id", "accessed_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # No foreign keys to patients or entries: the record must outlive their erasure (O.Del_1).
-    patient_id: Mapped[int]
+    # NULL once the patient is erased.
+    patient_id: Mapped[int | None]
     clinician_id: Mapped[int] = mapped_column(ForeignKey("clinicians.id"))
     accessed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     entry_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+    # The patient's own days of the entries shown, in the share's time zone.
+    days: Mapped[list[date]] = mapped_column(ARRAY(Date))
     notes_shown: Mapped[bool]
+    # The consent versions of the shares that allowed this read; see consent_texts.
+    consent_versions: Mapped[list[str]] = mapped_column(ARRAY(String(32)))
